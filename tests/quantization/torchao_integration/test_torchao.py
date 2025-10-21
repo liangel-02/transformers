@@ -53,6 +53,7 @@ if is_torchao_available():
         MappingType,
         ModuleFqnToConfig,
         PerAxis,
+        Int4WeightOnlyConfig
     )
     from torchao.quantization.autoquant import AQMixin
 
@@ -526,7 +527,7 @@ class TorchAoSerializationTest(unittest.TestCase):
         cls.EXPECTED_OUTPUT = "What are we having for dinner?\n- 1. What is the temperature outside"
 
     def setUp(self):
-        self.quant_config = TorchAoConfig(self.quant_scheme, **self.quant_scheme_kwargs)
+        self.quant_config = TorchAoConfig(Int4WeightOnlyConfig(**self.quant_scheme_kwargs))
         dtype = torch.bfloat16 if self.quant_scheme == "int4_weight_only" else "auto"
         self.quantized_model = AutoModelForCausalLM.from_pretrained(
             self.model_name,

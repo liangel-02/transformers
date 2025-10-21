@@ -595,8 +595,11 @@ def _load_state_dict_into_meta_model(
         device_map_regex = "|".join([re.escape(k) for k in sorted(device_map.keys(), reverse=True)])
 
     is_quantized = hf_quantizer is not None
+    is_ao = is_quantized and hf_quantizer.quantization_config.quant_method in {
+        QuantizationMethod.TORCHAO,
+    }
     is_safetensors = shard_file.endswith(".safetensors")
-    is_meta_state_dict = is_safetensors
+    is_meta_state_dict = is_safetensors and not is_ao
     file_pointer = safe_open(shard_file, framework="pt", device=tensor_device) if is_meta_state_dict else None
     params_to_load = list(state_dict.keys())
 
@@ -701,6 +704,7 @@ def load_shard_file(args):
         shard_file,
         state_dict,
         disk_only_shard_files,
+        is_ao,
         is_quantized,
         device_map,
         hf_quantizer,
@@ -718,7 +722,7 @@ def load_shard_file(args):
         return [], disk_offload_index
 
     map_location = "cpu"
-    if shard_file.endswith(".safetensors") and not (is_deepspeed_zero3_enabled() and not is_quantized):
+    if shard_file.endswith(".safetensors") and not (is_deepspeed_zero3_enabled() and not is_quantized) and not is_ao:
         map_location = "meta"
 
     # If shard_file is "", we use the existing state_dict instead of loading it
@@ -729,6 +733,13 @@ def load_shard_file(args):
 
     # Fix the key names
     state_dict = {key_renaming_mapping[k]: v for k, v in state_dict.items() if k in key_renaming_mapping}
+    metadata = None
+    if shard_file.endswith(".safetensors"):
+        with safe_open(shard_file, framework="pt") as f:
+            metadata = f.metadata()
+
+    if hf_quantizer:
+        state_dict = hf_quantizer.update_state_dict_with_metadata(state_dict, metadata)
 
     error_msgs = []
     if is_deepspeed_zero3_enabled() and not is_quantized:
@@ -4680,6 +4691,9 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
             QuantizationMethod.HQQ,
             QuantizationMethod.QUARK,
         }
+        is_ao = is_quantized and hf_quantizer.quantization_config.quant_method in {
+            QuantizationMethod.TORCHAO,
+        }
 
         # Get all the keys of the state dicts that we have to initialize the model with
         if sharded_metadata is not None:
@@ -4778,6 +4792,7 @@ class PreTrainedModel(nn.Module, EmbeddingAccessMixin, ModuleUtilsMixin, PushToH
                 shard_file,
                 state_dict,
                 disk_only_shard_files,
+                is_ao,
                 is_quantized,
                 device_map,
                 hf_quantizer,

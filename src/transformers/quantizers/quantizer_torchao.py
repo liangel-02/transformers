@@ -212,6 +212,16 @@ class TorchAoHfQuantizer(HfQuantizer):
                 "`pip install --upgrade accelerate`"
             )
 
+    def update_state_dict_with_metadata(self, state_dict, metadata):
+        """
+        If the metadata contains torchao tensor subclass information, we reconstruct the tensor subclass state dict
+        from the provided state_dict and metadata.
+        """
+        if TORCHAO_VERSION >= version.parse("0.14.0") and is_metadata_torchao(metadata):
+            return unflatten_tensor_state_dict(state_dict, metadata)
+        else:
+            return super().update_state_dict_with_metadata(state_dict, metadata)
+
     def adjust_max_memory(self, max_memory: dict[str, Union[int, str]]) -> dict[str, Union[int, str]]:
         # need more space for the quantization parameters (e.g. scale). Tested with int4 wo and group size = 128
         max_memory = {key: val * 0.9 for key, val in max_memory.items()}
@@ -274,34 +284,9 @@ class TorchAoHfQuantizer(HfQuantizer):
         module, tensor_name = get_module_from_name(model, param_name)
 
         if self.pre_quantized:
-            # If it's a bias, no need to do anything special (except removing the ":_data" part of the key, but was
-            # already done) - if it's unsafe-serialized (i.e. not safetensors), not need for anything either
-            is_unsafe_serialization = ":" not in full_name
-            if tensor_name == "bias" or is_unsafe_serialization:
-                module._parameters[tensor_name] = torch.nn.Parameter(
-                    param_value.to(target_device), requires_grad=param_value.requires_grad
-                )
-                return
-            # Sanity check for the new serialization format
-            elif not (TORCHAO_VERSION >= version.parse("0.14.0") and is_metadata_torchao(self.metadata)):
-                raise ValueError("To use `safetensors` serialization, you should have `torchao>=0.14.0` installed")
-
-            # Save the states for later quantization when they are all gathered
-            if not hasattr(self, "ao_params"):
-                self.ao_params = defaultdict(dict)
-            self.ao_params[param_name].update({full_name: param_value})
-
-            # We are ready for quantization in this case (we retrieved all the needed keys)
-            if len(self.ao_params[param_name]) == len(self.weight_ao_keys):
-                new_param = unflatten_tensor_state_dict(self.ao_params[param_name], self.metadata)[param_name]
-                # Set it
-                module._parameters[tensor_name] = torch.nn.Parameter(
-                    new_param.to(target_device), requires_grad=new_param.requires_grad
-                )
-
-                # Free memory
-                del self.ao_params[param_name]
-
+            module._parameters[tensor_name] = torch.nn.Parameter(
+                param_value.to(device=target_device), requires_grad=param_value.requires_grad
+            )
             # Add repr to the module
             if isinstance(module, nn.Linear):
                 module.extra_repr = types.MethodType(_linear_extra_repr, module)
